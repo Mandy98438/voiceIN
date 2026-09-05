@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edge Voice Assistant</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 40px 20px;
+            background: #111;
+            color: white;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
+        #status {
+            margin: 25px 0;
+            font-size: 18px;
+        }
+
+        button {
+            width: 220px;
+            padding: 18px;
+            margin: 10px;
+            font-size: 18px;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+        }
+
+        #start {
+            background: #2ecc71;
+            color: white;
+        }
+
+        #stop {
+            background: #e74c3c;
+            color: white;
+        }
+
+        #stop:disabled,
+        #start:disabled {
+            opacity: 0.5;
+        }
+
+        #log {
+            margin: 30px auto;
+            max-width: 600px;
+            min-height: 100px;
+            padding: 15px;
+            background: #222;
+            border-radius: 10px;
+            text-align: left;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Edge Voice Assistant</h1>
+    <p>Phone Microphone → WebSocket</p>
+
+    <div id="status">Ready</div>
+
+    <button id="start">🎤 Start Recording</button>
+    <button id="stop" disabled>⏹ Stop Recording</button>
+
+    <div id="log"></div>
+
+<script>
+
+const status = document.getElementById("status");
+const log = document.getElementById("log");
+const startButton = document.getElementById("start");
+const stopButton = document.getElementById("stop");
+
+let websocket;
+let audioContext;
+let mediaStream;
+let source;
+let processor;
+
+const SAMPLE_RATE = 16000;
+
+/* Connect to ESP32 WebSocket */
+function connectWebSocket() {
+
+    /*
+       CHANGE THIS LATER TO YOUR ESP32 IP.
+
+       Example:
+       ws://192.168.1.100/ws
+    */
+
+    const ESP32_IP = "192.168.1.100";
+
+    websocket = new WebSocket("ws://" + ESP32_IP + "/ws");
+
+    websocket.binaryType = "arraybuffer";
+
+    websocket.onopen = function() {
+        status.textContent = "WebSocket connected";
+        log.textContent += "Connected to ESP32\n";
+    };
+
+    websocket.onclose = function() {
+        status.textContent = "WebSocket disconnected";
+        log.textContent += "Disconnected from ESP32\n";
+    };
+
+    websocket.onerror = function(error) {
+        status.textContent = "WebSocket error";
+        console.error(error);
+    };
+}
+
+
+/* Convert Float32 audio → Int16 PCM */
+function convertToPCM(float32Array) {
+
+    const pcm = new Int16Array(float32Array.length);
+
+    for (let i = 0; i < float32Array.length; i++) {
+
+        let sample = Math.max(-1, Math.min(1, float32Array[i]));
+
+        pcm[i] = sample < 0
+            ? sample * 32768
+            : sample * 32767;
+    }
+
+    return pcm;
+}
+
+
+/* Start microphone */
+async function startRecording() {
+
+    try {
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+
+        audioContext = new AudioContext({
+            sampleRate: SAMPLE_RATE
+        });
+
+        source = audioContext.createMediaStreamSource(mediaStream);
+
+        processor = audioContext.createScriptProcessor(
+            4096,
+            1,
+            1
+        );
+
+        processor.onaudioprocess = function(event) {
+
+            if (!websocket ||
+                websocket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+
+            const input =
+                event.inputBuffer.getChannelData(0);
+
+            const pcm =
+                convertToPCM(input);
+
+            websocket.send(pcm.buffer);
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+        connectWebSocket();
+
+        status.textContent = "🎤 Recording...";
+        startButton.disabled = true;
+        stopButton.disabled = false;
+
+    } catch (error) {
+
+        console.error(error);
+
+        status.textContent =
+            "Microphone access failed";
+
+        log.textContent +=
+            "Microphone error: " + error.message + "\n";
+    }
+}
+
+
+/* Stop microphone */
+function stopRecording() {
+
+    if (processor) {
+        processor.disconnect();
+        processor = null;
+    }
+
+    if (source) {
+        source.disconnect();
+        source = null;
+    }
+
+    if (mediaStream) {
+
+        mediaStream.getTracks().forEach(
+            track => track.stop()
+        );
+
+        mediaStream = null;
+    }
+
+    if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+    }
+
+    if (websocket) {
+        websocket.close();
+        websocket = null;
+    }
+
+    status.textContent = "Stopped";
+
+    startButton.disabled = false;
+    stopButton.disabled = true;
+}
+
+
+/* Buttons */
+
+startButton.addEventListener(
+    "click",
+    startRecording
+);
+
+stopButton.addEventListener(
+    "click",
+    stopRecording
+);
+
+</script>
+
+</body>
+</html>
